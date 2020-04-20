@@ -5,16 +5,18 @@ import argparse
 import torch
 from torch.autograd import Variable
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from utils import save_pickle, load_pickle, load_embd_weights, to_var, save_checkpoint
 from utils import preload, load_data, get_entities, get_data_from_batch
 from models import HybridCodeNetwork
+from gensim.models import KeyedVectors
 import global_variables as g
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', type=int, default=1, help='n of dialogs. HCN uses one dialog for one minibatch')
-parser.add_argument('--n_epochs', type=int, default=5, help='number of epochs')
+parser.add_argument('--n_epochs', type=int, default=1, help='number of epochs') # epochs originally defaulted 5
 parser.add_argument('--embd_size', type=int, default=300, help='word embedding size')
 parser.add_argument('--hidden_size', type=int, default=128, help='hidden size for LSTM')
 parser.add_argument('--test', type=int, default=0, help='1 for test, or for training')
@@ -38,13 +40,46 @@ def categorical_cross_entropy(preds, labels):
     return loss
 
 
+def rl_loss(preds):
+    actions = []
+    #G = len(preds)-15
+    G = 100/len(preds)
+    #G = 1
+    loss = Variable(torch.zeros(1))
+    for p in preds:
+        c = torch.distributions.Categorical(p)
+        action = c.sample()
+        x = torch.tensor(2)
+        actions.append(action.item())
+        #loss += torch.log(p[action] + 1.e-7)*G
+        loss += -c.log_prob(action)*G
+    loss /= preds.size(0)
+    return loss, torch.tensor(actions)
+
+
+def print_dialog(uttrs, preds, labels):
+    preds_text = []
+    for pred_dist in preds:
+        idx = torch.argmax(pred_dist).item()
+        preds_text.append(system_acts[idx])
+
+    for pred_idx, uttr in enumerate(uttrs[0]):
+        uttr_text = ''
+        for idx in uttr:
+            if idx == 0:
+                continue
+            else:
+                uttr_text += i2w[idx.item()] + ' '
+        print(f'{uttr_text} | {preds_text[pred_idx]} | {system_acts[labels[pred_idx]]}')
+
+
 def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
     print('----Train---')
     data = copy.copy(data)
     for epoch in range(1, n_epochs + 1):
         print('Epoch', epoch, '---------')
         random.shuffle(data)
-        acc, total = 0, 0
+        correct, total = 0, 0
         for batch_idx in tqdm(range(0, len(data)-batch_size, batch_size)):
             batch = data[batch_idx:batch_idx+batch_size]
             uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i)
@@ -54,12 +89,26 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
             preds = preds.view(-1, action_size)
             labels = labels.view(-1)
             # loss = F.nll_loss(preds, labels)
-            loss = categorical_cross_entropy(preds, labels)
-            acc += torch.sum((labels == torch.max(preds, 1)[1]).long()).data[0] # ByteTensor to LongTensor
+            
+            RL = True
+            if batch_idx < 0:  # Change in order to pretrain
+                RL = False
+            if RL:
+                loss, actions = rl_loss(preds)
+            else:
+                loss = categorical_cross_entropy(preds, labels)
+            if RL:
+                correct += torch.sum((labels == actions).long()).item()  # ByteTensor to LongTensor
+            else:
+                correct += torch.sum((labels == torch.max(preds, 1)[1]).long()).item()  # ByteTensor to LongTensor
+
             total += labels.size(0)
             if batch_idx % (100 * batch_size) == 0:
-                print('Acc: {:.3f}% ({}/{})'.format(100 * acc/total, acc, total))
+                print()
+                print_dialog(uttrs, preds, labels)
+                print('Acc: {:.3f}% ({}/{})'.format(100 * correct/total, correct, total))
                 print('loss', loss.data[0])
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -78,7 +127,7 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
 def test(model, data, w2i, act2i, batch_size=1):
     print('----Test---')
     model.eval()
-    acc, total = 0, 0
+    correct, total = 0, 0
     for batch_idx in range(0, len(data)-batch_size, batch_size):
         batch = data[batch_idx:batch_idx+batch_size]
         uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i)
@@ -88,9 +137,9 @@ def test(model, data, w2i, act2i, batch_size=1):
         preds = preds.view(-1, action_size)
         labels = labels.view(-1)
         # loss = F.nll_loss(preds, labels)
-        acc += torch.sum(labels == torch.max(preds, 1)[1]).data[0]
+        correct += torch.sum(labels == torch.max(preds, 1)[1]).item()
         total += labels.size(0)
-    print('Test Acc: {:.3f}% ({}/{})'.format(100 * acc/total, acc, total))
+    print('Test Acc: {:.3f}% ({}/{})'.format(100 * correct/total, correct, total))
 
 
 entities = get_entities('dialog-bAbI-tasks/dialog-babi-kb-all.txt')
@@ -128,16 +177,17 @@ for act, i in act2i.items():
     print('act', i, act)
 
 # use saved pickle since loading word2vec is slow.
-# print('loading a word2vec binary...')
-# model_path = './data/GoogleNews-vectors-negative300.bin'
-# word2vec = KeyedVectors.load_word2vec_format('./data/GoogleNews-vectors-negative300.bin', binary=True)
-# print('done')
-# pre_embd_w = load_embd_weights(word2vec, len(vocab), args.embd_size, w2i)
-# save_pickle(pre_embd_w, 'pre_embd_w.pickle')
+#print('loading a word2vec binary...')
+#model_path = './data/GoogleNews-vectors-negative300.bin'
+#word2vec = KeyedVectors.load_word2vec_format('./data/GoogleNews-vectors-negative300.bin', binary=True)
+#print('done')
+#pre_embd_w = load_embd_weights(word2vec, len(vocab), args.embd_size, w2i)
+#save_pickle(pre_embd_w, 'pre_embd_w.pickle')
 pre_embd_w = load_pickle('pre_embd_w.pickle')
 
 opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': True}
 model = HybridCodeNetwork(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
+#model = Policy(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
 if torch.cuda.is_available():
     model.cuda()
 optimizer = torch.optim.Adadelta(filter(lambda p: p.requires_grad, model.parameters()))
