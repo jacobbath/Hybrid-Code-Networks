@@ -4,14 +4,16 @@ import copy
 import argparse
 import torch
 from torch.autograd import Variable
+from torch.distributions import Categorical
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from utils import save_pickle, load_pickle, load_embd_weights, to_var, save_checkpoint
-from utils import preload, load_data, get_entities, get_data_from_batch
+from utils import preload, load_data_from_file, get_entities, get_data_from_batch, load_data_from_string
 from models import HybridCodeNetwork
-from gensim.models import KeyedVectors
+#from gensim.models import KeyedVectors
 import global_variables as g
+from simulator import Simulator
 
 
 parser = argparse.ArgumentParser()
@@ -20,15 +22,15 @@ parser.add_argument('--n_epochs', type=int, default=1, help='number of epochs') 
 parser.add_argument('--embd_size', type=int, default=300, help='word embedding size')
 parser.add_argument('--hidden_size', type=int, default=128, help='hidden size for LSTM')
 parser.add_argument('--test', type=int, default=0, help='1 for test, or for training')
-parser.add_argument('--save_model', type=int, default=1, help='path saved params')
+parser.add_argument('--save_model', type=int, default=0, help='path saved params')
 parser.add_argument('--task', type=int, default=5, help='5 for Task 5 and 6 for Task 6')
 parser.add_argument('--seed', type=int, default=1111, help='random seed')
 parser.add_argument('--resume', type=str, metavar='PATH', help='path saved params')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
-torch.manual_seed(args.seed)
-random.seed(args.seed)
+#torch.manual_seed(args.seed)
+#random.seed(args.seed)
 # np.random.seed(args.seed)
 
 
@@ -38,23 +40,6 @@ def categorical_cross_entropy(preds, labels):
         loss -= torch.log(p[label] + 1.e-7).cpu()
     loss /= preds.size(0)
     return loss
-
-
-def rl_loss(preds):
-    actions = []
-    #G = len(preds)-15
-    G = 100/len(preds)
-    #G = 1
-    loss = Variable(torch.zeros(1))
-    for p in preds:
-        c = torch.distributions.Categorical(p)
-        action = c.sample()
-        x = torch.tensor(2)
-        actions.append(action.item())
-        #loss += torch.log(p[action] + 1.e-7)*G
-        loss += -c.log_prob(action)*G
-    loss /= preds.size(0)
-    return loss, torch.tensor(actions)
 
 
 def print_dialog(uttrs, preds, labels):
@@ -73,41 +58,69 @@ def print_dialog(uttrs, preds, labels):
         print(f'{uttr_text} | {preds_text[pred_idx]} | {system_acts[labels[pred_idx]]}')
 
 
+def simulate_dialog(system_acts):
+    dialog = '\n'
+    episode_actions = torch.Tensor([])
+    bot_says = '<BEGIN>'
+    turn_count = 0
+    episode_return = 0
+    while turn_count < 30:
+        user_says = user_simulator.respond(bot_says)
+        data, system_acts = load_data_from_string(user_says, entities, w2i, system_acts)
+        uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(data, w2i, act2i,
+                                                                             labels_included=False)
+        preds = model(uttrs, contexts, bows, prevs, act_fils)
+        c = Categorical(preds)
+        action = c.sample()
+        episode_actions = torch.cat([episode_actions, c.log_prob(action).reshape(1)])
+        bot_says = system_acts[action]
+        dialog += f'{user_says} | {bot_says}\n'
+        turn_count += 1
+
+        # dummy rules
+        if bot_says == "<SILENT>":
+            break
+        if bot_says == "you're welcome":
+            episode_return = .95**(turn_count-1)
+            break
+
+    return episode_actions, episode_return, dialog
+
+
 def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
     print('----Train---')
     data = copy.copy(data)
+    #user_simulator = Simulator(load_pickle('simulator_uttrs.pickle'))
     for epoch in range(1, n_epochs + 1):
         print('Epoch', epoch, '---------')
         random.shuffle(data)
         correct, total = 0, 0
-        for batch_idx in tqdm(range(0, len(data)-batch_size, batch_size)):
-            batch = data[batch_idx:batch_idx+batch_size]
-            uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i)
+        pretrain_episodes = 10
+        for i in range(100):
+            REINFORCE = False if i < pretrain_episodes else True
 
-            preds = model(uttrs, contexts, bows, prevs, act_fils)
-            action_size = preds.size(-1)
-            preds = preds.view(-1, action_size)
-            labels = labels.view(-1)
-            # loss = F.nll_loss(preds, labels)
-            
-            RL = True
-            if batch_idx < 0:  # Change in order to pretrain
-                RL = False
-            if RL:
-                loss, actions = rl_loss(preds)
+            if REINFORCE:
+                episode_actions, episode_return, dialog = simulate_dialog(system_acts)
+                dummy_baseline = 0.5
+                loss = torch.sum(episode_actions*(episode_return-dummy_baseline)).mul(-1)
+                print(dialog, 'loss', loss.item())
             else:
+                batch_idx = random.randint(0, len(data)-batch_size)
+                batch = data[batch_idx:batch_idx + batch_size]
+                uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i,
+                                                                                     labels_included=True)
+                preds = model(uttrs, contexts, bows, prevs, act_fils)
+                action_size = preds.size(-1)
+                preds = preds.view(-1, action_size)
+                labels = labels.view(-1)
                 loss = categorical_cross_entropy(preds, labels)
-            if RL:
-                correct += torch.sum((labels == actions).long()).item()  # ByteTensor to LongTensor
-            else:
                 correct += torch.sum((labels == torch.max(preds, 1)[1]).long()).item()  # ByteTensor to LongTensor
-
-            total += labels.size(0)
-            if batch_idx % (100 * batch_size) == 0:
-                print()
-                print_dialog(uttrs, preds, labels)
-                print('Acc: {:.3f}% ({}/{})'.format(100 * correct/total, correct, total))
-                print('loss', loss.data[0])
+                total += labels.size(0)
+                if i % 20 == 0:
+                    print()
+                    print_dialog(uttrs, preds, labels)
+                    print('Acc: {:.3f}% ({}/{})'.format(100 * correct / total, correct, total))
+                    print('loss', loss.data[0])
 
             optimizer.zero_grad()
             loss.backward()
@@ -130,7 +143,7 @@ def test(model, data, w2i, act2i, batch_size=1):
     correct, total = 0, 0
     for batch_idx in range(0, len(data)-batch_size, batch_size):
         batch = data[batch_idx:batch_idx+batch_size]
-        uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i)
+        uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i, labels_included=True)
 
         preds = model(uttrs, contexts, bows, prevs, act_fils)
         action_size = preds.size(-1)
@@ -162,8 +175,8 @@ vocab, system_acts = preload(fpath_train, vocab, system_acts)
 vocab = [g.UNK] + vocab
 w2i = dict((w, i) for i, w in enumerate(vocab))
 i2w = dict((i, w) for i, w in enumerate(vocab))
-train_data, system_acts = load_data(fpath_train, entities, w2i, system_acts)
-test_data, system_acts = load_data(fpath_test, entities, w2i, system_acts)
+train_data, system_acts = load_data_from_file(fpath_train, entities, w2i, system_acts)
+test_data, system_acts = load_data_from_file(fpath_test, entities, w2i, system_acts)
 print('vocab size:', len(vocab))
 print('action size:', len(system_acts))
 
@@ -183,11 +196,11 @@ for act, i in act2i.items():
 #print('done')
 #pre_embd_w = load_embd_weights(word2vec, len(vocab), args.embd_size, w2i)
 #save_pickle(pre_embd_w, 'pre_embd_w.pickle')
+#save_pickle(system_acts, 'system_acts.pickle')
 pre_embd_w = load_pickle('pre_embd_w.pickle')
 
-opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': True}
+opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': False}
 model = HybridCodeNetwork(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
-#model = Policy(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
 if torch.cuda.is_available():
     model.cuda()
 optimizer = torch.optim.Adadelta(filter(lambda p: p.requires_grad, model.parameters()))
@@ -201,6 +214,8 @@ if args.resume is not None and os.path.isfile(args.resume):
 else:
     print("=> no checkpoint found")
 
+user_simulator = Simulator(load_pickle('simulator_uttrs.pickle'))
+simulate_dialog(system_acts)
 if args.test != 1:
     train(model, train_data, optimizer, w2i, act2i, args.n_epochs, args.batch_size)
-test(model, test_data, w2i, act2i)
+#test(model, test_data, w2i, act2i)

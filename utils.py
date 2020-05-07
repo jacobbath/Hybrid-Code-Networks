@@ -78,7 +78,7 @@ def preload(fpath, vocab, system_acts):
     return vocab, system_acts
 
 
-def load_data(fpath, entities, w2i, system_acts):
+def load_data_from_file(fpath, entities, w2i, system_acts):
     '''
     store data as dialog (multi turns)
     '''
@@ -120,6 +120,33 @@ def load_data(fpath, entities, w2i, system_acts):
                 c.append(copy.deepcopy(context))
                 b.append(bow)
                 f.append(act_filter)
+    return data, system_acts
+
+
+def load_data_from_string(uttr, entities, w2i, system_acts):
+    '''
+    store data as dialog (multi turns)
+    '''
+    data = []
+    # x: user uttr, y: sys act, c: context, b: BoW, p: previous sys act, f: action filter
+    x, y, c, b, p, f = [], [], [], [], [], []
+    context    = [0] * len(entities.keys())
+    data.append((x, y, c, b, p, f))
+
+    update_context(context, uttr, entities)
+    act_filter = generate_act_filter(len(system_acts), context)
+    bow = get_bow(uttr, w2i)
+    sys_act = g.SILENT
+    x.append(uttr)
+
+    if len(y) == 0:
+        p.append(g.SILENT)
+    else:
+        p.append(y[-1])
+    y.append(sys_act)
+    c.append(copy.deepcopy(context))
+    b.append(bow)
+    f.append(act_filter)
     return data, system_acts
 
 
@@ -223,21 +250,23 @@ def padding(data, default_val, maxlen, pad_seq_len):
     return to_var(torch.FloatTensor(data))
 
 
-def get_data_from_batch(batch, w2i, act2i):
+def get_data_from_batch(batch, w2i, act2i, labels_included):
     uttrs_list = [d[0] for d in batch]
     dialog_maxlen = max([len(uttrs) for uttrs in uttrs_list])
     uttr_maxlen = max([len(u) for uttrs in uttrs_list for u in uttrs])
     uttr_var = make_word_vector(uttrs_list, w2i, dialog_maxlen, uttr_maxlen)
 
-    batch_labels = [d[1] for d in batch]
     labels_var = []
-    for labels in batch_labels:
-        vec_labels = [act2i[l] for l in labels]
-        pad_len = dialog_maxlen - len(labels)
-        for _ in range(pad_len):
-            vec_labels.append(act2i[g.SILENT])
-        labels_var.append(torch.LongTensor(vec_labels))
-    labels_var = to_var(torch.stack(labels_var, 0))
+    if labels_included:
+        batch_labels = [d[1] for d in batch]
+        for labels in batch_labels:
+            vec_labels = [act2i[l] for l in labels]
+            pad_len = dialog_maxlen - len(labels)
+            for _ in range(pad_len):
+                vec_labels.append(act2i[g.SILENT])
+            labels_var.append(torch.LongTensor(vec_labels))
+        labels_var = to_var(torch.stack(labels_var, 0))
+    
 
     batch_prev_acts = [d[4] for d in batch]
     prev_var = []
@@ -252,7 +281,7 @@ def get_data_from_batch(batch, w2i, act2i):
             vec_prev_acts.append([0] * len(act2i))
         prev_var.append(torch.FloatTensor(vec_prev_acts))
     prev_var = to_var(torch.stack(prev_var, 0))
-
+    
     context = copy.deepcopy([d[2] for d in batch])
     context = padding(context, 1, dialog_maxlen, len(context[0][0]))
 
@@ -262,4 +291,4 @@ def get_data_from_batch(batch, w2i, act2i):
     act_filter = copy.deepcopy([d[5] for d in batch])
     act_filter = padding(act_filter, 0, dialog_maxlen, len(act_filter[0][0]))
 
-    return uttr_var, labels_var, context, bow, prev_var, act_filter
+    return uttr_var, labels_var, prev_var, context, bow, act_filter
