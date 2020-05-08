@@ -64,9 +64,13 @@ def simulate_dialog(system_acts):
     bot_says = '<BEGIN>'
     turn_count = 0
     episode_return = 0
-    while turn_count < 30:
+    context = False
+    looks_great = False
+    while turn_count < 3000:
         user_says = user_simulator.respond(bot_says)
-        data, system_acts = load_data_from_string(user_says, entities, w2i, system_acts)
+        #print(user_says)
+        if user_says == 'that looks great': looks_great = True
+        data, system_acts, context = load_data_from_string(user_says, entities, w2i, system_acts, context)
         uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(data, w2i, act2i,
                                                                              labels_included=False)
         preds = model(uttrs, contexts, bows, prevs, act_fils)
@@ -81,8 +85,11 @@ def simulate_dialog(system_acts):
         if bot_says == "<SILENT>":
             break
         if bot_says == "you're welcome":
-            episode_return = .95**(turn_count-1)
-            break
+            if context == [0, 0, 0, 0]: break
+            if not looks_great: break
+            else:
+                episode_return = .95**(turn_count-1)
+                break
 
     return episode_actions, episode_return, dialog
 
@@ -90,12 +97,11 @@ def simulate_dialog(system_acts):
 def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
     print('----Train---')
     data = copy.copy(data)
-    #user_simulator = Simulator(load_pickle('simulator_uttrs.pickle'))
     for epoch in range(1, n_epochs + 1):
         print('Epoch', epoch, '---------')
         random.shuffle(data)
         correct, total = 0, 0
-        pretrain_episodes = 10
+        pretrain_episodes = 0
         for i in range(100):
             REINFORCE = False if i < pretrain_episodes else True
 
@@ -103,7 +109,8 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
                 episode_actions, episode_return, dialog = simulate_dialog(system_acts)
                 dummy_baseline = 0.5
                 loss = torch.sum(episode_actions*(episode_return-dummy_baseline)).mul(-1)
-                print(dialog, 'loss', loss.item())
+                if i % 10 == 0:
+                    print(dialog, 'loss', loss.item(), 'return', episode_return)
             else:
                 batch_idx = random.randint(0, len(data)-batch_size)
                 batch = data[batch_idx:batch_idx + batch_size]
@@ -214,7 +221,10 @@ if args.resume is not None and os.path.isfile(args.resume):
 else:
     print("=> no checkpoint found")
 
-user_simulator = Simulator(load_pickle('simulator_uttrs.pickle'))
+user_source = 'example_phrases_dict.pickle'
+#user_source = 'simulator_uttrs.pickle'
+
+user_simulator = Simulator(user_source)
 simulate_dialog(system_acts)
 if args.test != 1:
     train(model, train_data, optimizer, w2i, act2i, args.n_epochs, args.batch_size)

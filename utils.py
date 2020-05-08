@@ -123,17 +123,17 @@ def load_data_from_file(fpath, entities, w2i, system_acts):
     return data, system_acts
 
 
-def load_data_from_string(uttr, entities, w2i, system_acts):
+def load_data_from_string(uttr, entities, w2i, system_acts, context):
     '''
     store data as dialog (multi turns)
     '''
     data = []
     # x: user uttr, y: sys act, c: context, b: BoW, p: previous sys act, f: action filter
     x, y, c, b, p, f = [], [], [], [], [], []
-    context    = [0] * len(entities.keys())
+    if not context:
+        context = [0] * len(entities.keys())
     data.append((x, y, c, b, p, f))
-
-    update_context(context, uttr, entities)
+    update_context(context, uttr.split(' '), entities)
     act_filter = generate_act_filter(len(system_acts), context)
     bow = get_bow(uttr, w2i)
     sys_act = g.SILENT
@@ -147,7 +147,7 @@ def load_data_from_string(uttr, entities, w2i, system_acts):
     c.append(copy.deepcopy(context))
     b.append(bow)
     f.append(act_filter)
-    return data, system_acts
+    return data, system_acts, context
 
 
 def update_context(context, sentence, entities):
@@ -266,7 +266,6 @@ def get_data_from_batch(batch, w2i, act2i, labels_included):
                 vec_labels.append(act2i[g.SILENT])
             labels_var.append(torch.LongTensor(vec_labels))
         labels_var = to_var(torch.stack(labels_var, 0))
-    
 
     batch_prev_acts = [d[4] for d in batch]
     prev_var = []
@@ -281,7 +280,7 @@ def get_data_from_batch(batch, w2i, act2i, labels_included):
             vec_prev_acts.append([0] * len(act2i))
         prev_var.append(torch.FloatTensor(vec_prev_acts))
     prev_var = to_var(torch.stack(prev_var, 0))
-    
+
     context = copy.deepcopy([d[2] for d in batch])
     context = padding(context, 1, dialog_maxlen, len(context[0][0]))
 
