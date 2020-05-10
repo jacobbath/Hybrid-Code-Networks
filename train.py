@@ -7,6 +7,8 @@ from torch.autograd import Variable
 from torch.distributions import Categorical
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 from utils import save_pickle, load_pickle, load_embd_weights, to_var, save_checkpoint
 from utils import preload, load_data_from_file, get_entities, get_data_from_batch, load_data_from_string
@@ -58,18 +60,19 @@ def print_dialog(uttrs, preds, labels):
         print(f'{uttr_text} | {preds_text[pred_idx]} | {system_acts[labels[pred_idx]]}')
 
 
-def simulate_dialog(system_acts):
+def simulate_dialog(system_acts, is_test):
     dialog = '\n'
     episode_actions = torch.Tensor([])
     bot_says = '<BEGIN>'
     turn_count = 0
     episode_return = 0
     context = False
-    looks_great = False
-    while turn_count < 3000:
-        user_says = user_simulator.respond(bot_says)
-        #print(user_says)
-        if user_says == 'that looks great': looks_great = True
+    #context_goal = [random.randint(0,1), 1, random.randint(0,1), 1]
+    context_goal = [1, 1, 1, 1]
+    user_happy = False  # if user has said <THANK YOU>
+    while turn_count < 50:
+        user_says = user_simulator.respond(bot_says, context_goal, is_test)
+        if user_says == '<THANK YOU>': user_happy = True
         data, system_acts, context = load_data_from_string(user_says, entities, w2i, system_acts, context)
         uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(data, w2i, act2i,
                                                                              labels_included=False)
@@ -81,12 +84,12 @@ def simulate_dialog(system_acts):
         dialog += f'{user_says} | {bot_says}\n'
         turn_count += 1
 
-        # dummy rules
+        # episode return evalutation rules
         if bot_says == "<SILENT>":
             break
         if bot_says == "you're welcome":
-            if context == [0, 0, 0, 0]: break
-            if not looks_great: break
+            if context != context_goal: break  # checks that the bot has all information
+            if not user_happy: break
             else:
                 episode_return = .95**(turn_count-1)
                 break
@@ -102,15 +105,20 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
         random.shuffle(data)
         correct, total = 0, 0
         pretrain_episodes = 0
-        for i in range(100):
+        return_per_episode = []
+        for i in tqdm(range(1000)):
             REINFORCE = False if i < pretrain_episodes else True
 
             if REINFORCE:
-                episode_actions, episode_return, dialog = simulate_dialog(system_acts)
-                dummy_baseline = 0.5
-                loss = torch.sum(episode_actions*(episode_return-dummy_baseline)).mul(-1)
+                episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=False)
+                if return_per_episode == []: baseline = 0
+                else:
+                    baseline = np.mean(return_per_episode[-min(len(return_per_episode), 100):])
+                loss = torch.sum(episode_actions*(episode_return-baseline)).mul(-1)
+                #if i % 1001 == 0:
                 if i % 10 == 0:
                     print(dialog, 'loss', loss.item(), 'return', episode_return)
+                return_per_episode.append(episode_return)
             else:
                 batch_idx = random.randint(0, len(data)-batch_size)
                 batch = data[batch_idx:batch_idx + batch_size]
@@ -133,6 +141,10 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
             loss.backward()
             optimizer.step()
 
+        window = 20
+        rolling_mean = pd.Series(return_per_episode).rolling(window).mean()
+        plt.plot(rolling_mean)
+        plt.show()
         # save the model {{{
         if args.save_model == 1:
             filename = 'ckpts/HCN-Epoch-{}.model'.format(epoch)
@@ -160,6 +172,13 @@ def test(model, data, w2i, act2i, batch_size=1):
         correct += torch.sum(labels == torch.max(preds, 1)[1]).item()
         total += labels.size(0)
     print('Test Acc: {:.3f}% ({}/{})'.format(100 * correct/total, correct, total))
+
+
+def simulate_test_dialogs(how_many):
+    model.eval()
+    for i in range(how_many):
+        episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=True)
+        print(dialog, 'return', episode_return)
 
 
 entities = get_entities('dialog-bAbI-tasks/dialog-babi-kb-all.txt')
@@ -206,7 +225,7 @@ for act, i in act2i.items():
 #save_pickle(system_acts, 'system_acts.pickle')
 pre_embd_w = load_pickle('pre_embd_w.pickle')
 
-opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': False}
+opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': True}
 model = HybridCodeNetwork(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
 if torch.cuda.is_available():
     model.cuda()
@@ -224,8 +243,8 @@ else:
 user_source = 'example_phrases_dict.pickle'
 #user_source = 'simulator_uttrs.pickle'
 
-user_simulator = Simulator(user_source)
-simulate_dialog(system_acts)
+user_simulator = Simulator(user_source, entities)
 if args.test != 1:
     train(model, train_data, optimizer, w2i, act2i, args.n_epochs, args.batch_size)
+simulate_test_dialogs(10)
 #test(model, test_data, w2i, act2i)

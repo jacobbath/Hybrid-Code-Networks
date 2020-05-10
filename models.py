@@ -66,7 +66,6 @@ class HybridCodeNetwork(nn.Module):
             x = torch.cat((x, prev), 2)
         if self.use_mask:
             x = torch.cat((x, act_filter), 2)
-
         x, (h, c) = self.lstm(x) # (bs, dialog_len, hid), ((1, bs, hid), (1, bs, hid))
         y = self.fc(torch.tanh(x)) # (bs, dialog_len, action_size)
         y = F.softmax(y, -1) # (bs, dialog_len, action_size)

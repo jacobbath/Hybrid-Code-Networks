@@ -62,7 +62,7 @@ def process_example_phrases(save, print_dict=False):
     uttr_dict['sure let me find an other option for you'] = [set()]
     uttr_dict['what do you think of this option: '] = [set()]
     uttr_dict['where should it be'] = [set()]
-    uttr_dict['which price range are looking for'] = [set()]
+    uttr_dict['which price range are looking for'] = [set(), set()]
     uttr_dict["you're welcome"] = [set()]
     uttr_dict['<BEGIN>'] = [set()]
 
@@ -74,13 +74,16 @@ def process_example_phrases(save, print_dict=False):
         col += 1
         row = 2
         while True:
-            if cell(row, col) == None:
+            phrase = cell(row, col)
+            if phrase == None:
                 break
             else:
-                list[0].add(cell(row, col).strip())
+                list[0].add(phrase.strip())
                 row += 1
+                if ' ' not in phrase:
+                    pass
 
-        if len(list) > 1:
+        if len(list) > 1:  # only necessary when context_vector can be != [1, 1, 1, 1]
             row = 2
             col += 1
             while True:
@@ -97,4 +100,4 @@ def process_example_phrases(save, print_dict=False):
 
 
 #process_babi_dataset(save=True, print_dict=True)
-process_example_phrases(save=True, print_dict=False)
+#process_example_phrases(save=True, print_dict=True)
