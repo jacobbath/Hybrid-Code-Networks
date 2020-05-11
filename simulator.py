@@ -16,7 +16,7 @@ class Simulator():
                     self.train_uttrs[bot_uttr].append(set())
                     self.test_uttrs[bot_uttr].append(set())
                 else:
-                    train_set = set(random.sample(resp_set, round(len(resp_set)*0.5)))
+                    train_set = set(random.sample(resp_set, round(len(resp_set)*0.6)))
                     test_set = resp_set-train_set
                     if len(test_set) == 0:
                         test_set = train_set
@@ -30,7 +30,10 @@ class Simulator():
         else:
             uttr_dict = self.train_uttrs
 
-        if uttr == 'great let me do the reservation': resp = '<THANK YOU>'
+        if uttr == 'great let me do the reservation':
+            resp = '<THANK YOU>'
+        elif uttr == 'api_call':
+            resp = '<SILENCE>'
         elif len(uttr_dict[uttr]) > 1:
             if uttr == 'any preference on a type of cuisine':
                 if context_goal[0]:

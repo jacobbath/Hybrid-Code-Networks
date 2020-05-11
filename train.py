@@ -70,9 +70,11 @@ def simulate_dialog(system_acts, is_test):
     #context_goal = [random.randint(0,1), 1, random.randint(0,1), 1]
     context_goal = [1, 1, 1, 1]
     user_happy = False  # if user has said <THANK YOU>
+    api_call_done = False
     while turn_count < 50:
         user_says = user_simulator.respond(bot_says, context_goal, is_test)
-        if user_says == '<THANK YOU>': user_happy = True
+        if user_says == '<THANK YOU>':
+            user_happy = True
         data, system_acts, context = load_data_from_string(user_says, entities, w2i, system_acts, context)
         uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(data, w2i, act2i,
                                                                              labels_included=False)
@@ -81,7 +83,9 @@ def simulate_dialog(system_acts, is_test):
         action = c.sample()
         episode_actions = torch.cat([episode_actions, c.log_prob(action).reshape(1)])
         bot_says = system_acts[action]
-        dialog += f'{user_says} | {bot_says}\n'
+        if bot_says == 'api_call':
+            api_call_done = True
+        dialog += f'User: {user_says}\nBot: {bot_says}\n'
         turn_count += 1
 
         # episode return evalutation rules
@@ -106,19 +110,25 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
         correct, total = 0, 0
         pretrain_episodes = 0
         return_per_episode = []
-        for i in tqdm(range(1000)):
+        success = []
+        for i in tqdm(range(2000)):
             REINFORCE = False if i < pretrain_episodes else True
 
             if REINFORCE:
                 episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=False)
-                if return_per_episode == []: baseline = 0
+                if return_per_episode == []:
+                    baseline = 0
                 else:
                     baseline = np.mean(return_per_episode[-min(len(return_per_episode), 100):])
                 loss = torch.sum(episode_actions*(episode_return-baseline)).mul(-1)
-                #if i % 1001 == 0:
-                if i % 10 == 0:
+                if i % 1001 == 0:
                     print(dialog, 'loss', loss.item(), 'return', episode_return)
                 return_per_episode.append(episode_return)
+                test_return = simulate_test_dialogs(1)
+                if test_return == 0:
+                    success.append(0)
+                else:
+                    success.append(1)
             else:
                 batch_idx = random.randint(0, len(data)-batch_size)
                 batch = data[batch_idx:batch_idx + batch_size]
@@ -141,9 +151,17 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
             loss.backward()
             optimizer.step()
 
-        window = 20
-        rolling_mean = pd.Series(return_per_episode).rolling(window).mean()
-        plt.plot(rolling_mean)
+        window = 50
+        return_rolling_mean = pd.Series(return_per_episode).rolling(window).mean()
+        success_rolling_mean = pd.Series(success).rolling(window).mean()
+        with open('return_per_episode.txt', 'w') as f:
+            for epi, ret in return_rolling_mean.fillna(.0).items():
+                f.write(f'{epi+1, ret}')
+        with open('success_rate.txt', 'w') as f:
+            for epi, ret in success_rolling_mean.fillna(.0).items():
+                f.write(f'{epi+1, ret}')
+
+        plt.plot(success_rolling_mean)
         plt.show()
         # save the model {{{
         if args.save_model == 1:
@@ -178,7 +196,8 @@ def simulate_test_dialogs(how_many):
     model.eval()
     for i in range(how_many):
         episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=True)
-        print(dialog, 'return', episode_return)
+        #print(dialog, 'return', episode_return)
+    return episode_return
 
 
 entities = get_entities('dialog-bAbI-tasks/dialog-babi-kb-all.txt')
@@ -225,7 +244,7 @@ for act, i in act2i.items():
 #save_pickle(system_acts, 'system_acts.pickle')
 pre_embd_w = load_pickle('pre_embd_w.pickle')
 
-opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': True}
+opts = {'use_ctx': True, 'use_embd': True, 'use_prev': True, 'use_mask': False}
 model = HybridCodeNetwork(len(vocab), args.embd_size, args.hidden_size, len(system_acts), pre_embd_w, **opts)
 if torch.cuda.is_available():
     model.cuda()
@@ -246,5 +265,5 @@ user_source = 'example_phrases_dict.pickle'
 user_simulator = Simulator(user_source, entities)
 if args.test != 1:
     train(model, train_data, optimizer, w2i, act2i, args.n_epochs, args.batch_size)
-simulate_test_dialogs(10)
+#simulate_test_dialogs(10)
 #test(model, test_data, w2i, act2i)
