@@ -57,7 +57,8 @@ def print_dialog(uttrs, preds, labels):
                 continue
             else:
                 uttr_text += i2w[idx.item()] + ' '
-        print(f'{uttr_text} | {preds_text[pred_idx]} | {system_acts[labels[pred_idx]]}')
+        #print(f'{uttr_text} | {preds_text[pred_idx]} | {system_acts[labels[pred_idx]]}')
+        print(f"User: {uttr_text} \\\\\nBot: {preds_text[pred_idx]} \\\\")
 
 
 def simulate_dialog(system_acts, is_test):
@@ -72,6 +73,10 @@ def simulate_dialog(system_acts, is_test):
     user_happy = False  # if user has said <THANK YOU>
     api_call_done = False
     while turn_count < 50:
+        if bot_says == 'what do you think of this option:':  # bad solution for some bug
+            bot_says = 'what do you think of this option: '
+        if bot_says == 'here it is':  # bad solution for some bug
+            bot_says = 'here it is '
         user_says = user_simulator.respond(bot_says, context_goal, is_test)
         if user_says == '<THANK YOU>':
             user_happy = True
@@ -85,7 +90,7 @@ def simulate_dialog(system_acts, is_test):
         bot_says = system_acts[action]
         if bot_says == 'api_call':
             api_call_done = True
-        dialog += f'User: {user_says}\nBot: {bot_says}\n'
+        dialog += f"User: {user_says} \\\\\nBot: {bot_says} \\\\\n"
         turn_count += 1
 
         # episode return evalutation rules
@@ -112,6 +117,8 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
         return_per_episode = []
         success = []
         for i in tqdm(range(2000)):
+            #if len(return_per_episode) > 10 and np.mean(return_per_episode[-200:]) > 0.75 and pretrain_episodes == 0:
+                #break
             REINFORCE = False if i < pretrain_episodes else True
 
             if REINFORCE:
@@ -121,11 +128,15 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
                 else:
                     baseline = np.mean(return_per_episode[-min(len(return_per_episode), 100):])
                 loss = torch.sum(episode_actions*(episode_return-baseline)).mul(-1)
-                if i % 1001 == 0:
-                    print(dialog, 'loss', loss.item(), 'return', episode_return)
+                print_simulated_dialog = False
+                if i % 1 == 0:
+                    print('\n100 rolling mean return:', np.mean(return_per_episode[-100:]))
+                    print('Dialog', i+1)
+                    #print(dialog, 'loss', loss.item(), 'return', episode_return)
+                    print_simulated_dialog = True
                 return_per_episode.append(episode_return)
-                test_return = simulate_test_dialogs(1)
-                if test_return == 0:
+                test_return = simulate_test_dialogs(1, print_simulated_dialog)
+                if test_return == 0.:
                     success.append(0)
                 else:
                     success.append(1)
@@ -141,7 +152,7 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
                 loss = categorical_cross_entropy(preds, labels)
                 correct += torch.sum((labels == torch.max(preds, 1)[1]).long()).item()  # ByteTensor to LongTensor
                 total += labels.size(0)
-                if i % 20 == 0:
+                if i % 100 == 0:
                     print()
                     print_dialog(uttrs, preds, labels)
                     print('Acc: {:.3f}% ({}/{})'.format(100 * correct / total, correct, total))
@@ -156,12 +167,22 @@ def train(model, data, optimizer, w2i, act2i, n_epochs=5, batch_size=1):
         success_rolling_mean = pd.Series(success).rolling(window).mean()
         with open('return_per_episode.txt', 'w') as f:
             for epi, ret in return_rolling_mean.fillna(.0).items():
-                f.write(f'{epi+1, ret}')
+                f.write(f'{epi+1}\t{ret}\n')
         with open('success_rate.txt', 'w') as f:
-            for epi, ret in success_rolling_mean.fillna(.0).items():
-                f.write(f'{epi+1, ret}')
+            for epi, suc in success_rolling_mean.fillna(.0).items():
+                f.write(f'{epi+1}\t{suc}\n')
 
+        plt.subplot(121)
+        plt.plot(return_rolling_mean)
+        plt.ylim((0, 1))
+        plt.xlim((0, len(return_rolling_mean)))
+        plt.ylabel('Return')
+
+        plt.subplot(122)
         plt.plot(success_rolling_mean)
+        plt.ylim((0, 1))
+        plt.xlim((0, len(success_rolling_mean)))
+        plt.ylabel('Success rate')
         plt.show()
         # save the model {{{
         if args.save_model == 1:
@@ -180,7 +201,7 @@ def test(model, data, w2i, act2i, batch_size=1):
     correct, total = 0, 0
     for batch_idx in range(0, len(data)-batch_size, batch_size):
         batch = data[batch_idx:batch_idx+batch_size]
-        uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i, labels_included=True)
+        uttrs, labels, contexts, bows, prevs, act_fils = get_data_from_batch(batch, w2i, act2i, labels_included=False)
 
         preds = model(uttrs, contexts, bows, prevs, act_fils)
         action_size = preds.size(-1)
@@ -192,12 +213,14 @@ def test(model, data, w2i, act2i, batch_size=1):
     print('Test Acc: {:.3f}% ({}/{})'.format(100 * correct/total, correct, total))
 
 
-def simulate_test_dialogs(how_many):
-    model.eval()
-    for i in range(how_many):
-        episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=True)
-        #print(dialog, 'return', episode_return)
-    return episode_return
+def simulate_test_dialogs(how_many, print_simulated_dialog=False):
+    #model.eval()
+    with torch.no_grad():
+        for i in range(how_many):
+            episode_actions, episode_return, dialog = simulate_dialog(system_acts, is_test=True)
+            if print_simulated_dialog:
+                print(dialog, 'return', episode_return)
+        return episode_return
 
 
 entities = get_entities('dialog-bAbI-tasks/dialog-babi-kb-all.txt')
@@ -207,6 +230,7 @@ for idx, (ent_name, ent_vals) in enumerate(entities.items()):
 assert args.task == 5 or args.task == 6, 'task must be 5 or 6'
 if args.task == 5:
     fpath_train = 'dialog-bAbI-tasks/dialog-babi-task5-full-dialogs-trn.txt'
+    #fpath_train = 'pretrain_dialogs.txt'
     fpath_test = 'dialog-bAbI-tasks/dialog-babi-task5-full-dialogs-tst-OOV.txt'
 elif args.task == 6: # this is not working yet
     fpath_train = 'dialog-bAbI-tasks/dialog-babi-task6-dstc2-trn.txt'
@@ -265,5 +289,5 @@ user_source = 'example_phrases_dict.pickle'
 user_simulator = Simulator(user_source, entities)
 if args.test != 1:
     train(model, train_data, optimizer, w2i, act2i, args.n_epochs, args.batch_size)
-#simulate_test_dialogs(10)
-#test(model, test_data, w2i, act2i)
+#simulate_test_dialogs(10, print_simulated_dialog=True)
+test(model, test_data, w2i, act2i)

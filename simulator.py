@@ -16,7 +16,7 @@ class Simulator():
                     self.train_uttrs[bot_uttr].append(set())
                     self.test_uttrs[bot_uttr].append(set())
                 else:
-                    train_set = set(random.sample(resp_set, round(len(resp_set)*0.6)))
+                    train_set = set(random.sample(resp_set, round(len(resp_set)*0.8)))
                     test_set = resp_set-train_set
                     if len(test_set) == 0:
                         test_set = train_set

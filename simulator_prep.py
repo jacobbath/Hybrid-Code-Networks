@@ -66,8 +66,8 @@ def process_example_phrases(save, print_dict=False):
     uttr_dict["you're welcome"] = [set()]
     uttr_dict['<BEGIN>'] = [set()]
 
-    wb = load_workbook(filename='example_phrases.xlsx')
-    sh = wb['Blad1']
+    wb = load_workbook(filename='user_simulator_phrases.xlsx')
+    sh = wb['Phrases']
 
     col = 0
     for phrase, list in uttr_dict.items():
@@ -78,7 +78,7 @@ def process_example_phrases(save, print_dict=False):
             if phrase == None:
                 break
             else:
-                list[0].add(phrase.strip())
+                list[0].add(phrase)
                 row += 1
                 if ' ' not in phrase:
                     pass
@@ -100,4 +100,4 @@ def process_example_phrases(save, print_dict=False):
 
 
 #process_babi_dataset(save=True, print_dict=True)
-#process_example_phrases(save=True, print_dict=True)
+process_example_phrases(save=True, print_dict=True)

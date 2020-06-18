@@ -75,6 +75,7 @@ def preload(fpath, vocab, system_acts):
                     if sys_act not in system_acts: system_acts.append(sys_act)
     vocab = sorted(vocab)
     system_acts = sorted(system_acts)
+    print(system_acts)
     return vocab, system_acts
 
 
